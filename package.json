@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@syndicateio/syndicate-node": "^0.0.302",
+    "@vercel/node": "^3.0.7"
+  }
+}
