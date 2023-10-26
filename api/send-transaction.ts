@@ -1,3 +1,8 @@
+// This function will automatically trigger at 1 AM UTC on the first of every
+// month. See vercel.json for the cron schedule.
+// 1 AM is used instead of midnight to give humans an hour to mint the NFTs if
+// desired for on-chain provenance
+
 import { VercelRequest, VercelResponse } from "@vercel/node";
 import { SyndicateClient } from "@syndicateio/syndicate-node";
 
