@@ -42,11 +42,13 @@ export default async function (req: VercelRequest, res: VercelResponse) {
       },
     });
 
-    res.status(200).send(
-      `<b>Transaction submitted! Transaction IDs Received:</b>
-        <br>Circularity Burn: ${burnTx.transactionId}
-        <br>Circularity Burn Ceremony Mint: ${mintTx.transactionId}`
-    );
+    res.status(200).json({
+      message: "Transactions submitted!",
+      transactions: {
+        circularityBurn: burnTx.transactionId,
+        circularityBurnCeremonyMint: mintTx.transactionId,
+      },
+    });
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
