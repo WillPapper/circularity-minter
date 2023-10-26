@@ -7,7 +7,15 @@ import { VercelRequest, VercelResponse } from "@vercel/node";
 import { SyndicateClient } from "@syndicateio/syndicate-node";
 
 const syndicate = new SyndicateClient({
-  token: process.env.SYNDICATE_API_KEY,
+  token: () => {
+    const apiKey = process.env.SYNDICATE_API_KEY;
+    if (typeof apiKey === "undefined") {
+      throw new Error(
+        "SYNDICATE_API_KEY is not defined in environment variables."
+      );
+    }
+    return apiKey;
+  },
 });
 
 export default async function (req: VercelRequest, res: VercelResponse) {
