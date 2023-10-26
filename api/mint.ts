@@ -6,13 +6,10 @@ const syndicate = new SyndicateClient({ token: "YOUR_ACCESS_TOKEN" });
 export default async function (req: VercelRequest, res: VercelResponse) {
   try {
     const tx = await syndicate.transact.sendTransaction({
-      projectId: "eb7dab54-f66b-4739-8c18-f5a6196f7117",
-      contractAddress: "0x4Bc7a03C46c0BBb290d5455ff7f03d30263809e4",
-      chainId: 80001,
-      functionSignature: "mintTo(address to)",
-      args: {
-        to: "0x18F33CEf45817C428d98C4E188A770191fDD4B79",
-      },
+      projectId: "522c30f3-abc4-4423-a315-7a13b56cbb3a",
+      contractAddress: "0x8680db891ff8c34f2ffcefac43d55059d010a821",
+      chainId: 1,
+      functionSignature: "burn()",
     });
 
     res.status(200).send(`Transaction ID Received: ${tx.transactionId}`);
