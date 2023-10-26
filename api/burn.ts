@@ -8,7 +8,7 @@ const syndicate = new SyndicateClient({
 export default async function (req: VercelRequest, res: VercelResponse) {
   try {
     const tx = await syndicate.transact.sendTransaction({
-      projectId: "522c30f3-abc4-4423-a315-7a13b56cbb3a",
+      projectId: "2bee69fa-0e96-42cb-a864-8e7258a044a3",
       contractAddress: "0x8680db891ff8c34f2ffcefac43d55059d010a821",
       chainId: 1,
       functionSignature: "burn()",
