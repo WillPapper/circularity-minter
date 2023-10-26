@@ -1,7 +1,9 @@
 import { VercelRequest, VercelResponse } from "@vercel/node";
 import { SyndicateClient } from "@syndicateio/syndicate-node";
 
-const syndicate = new SyndicateClient({ token: "YOUR_ACCESS_TOKEN" });
+const syndicate = new SyndicateClient({
+  token: process.env.SYNDICATE_API_KEY,
+});
 
 export default async function (req: VercelRequest, res: VercelResponse) {
   try {
