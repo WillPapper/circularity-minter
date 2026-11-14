@@ -18,7 +18,8 @@ export default defineConfig({
       // transactions.
       triggers.scheduled({ schedule: "0 1 1 * *" }),
     ],
-    // Set each with `cf workers secrets put` (see README)
+    // Set with `npm run deploy:secrets` or `cf workers secrets update` (see
+    // README)
     env: {
       // 0x-prefixed private key of the wallet that pays gas
       PRIVATE_KEY: bindings.secret(),

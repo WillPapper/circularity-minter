@@ -58,11 +58,16 @@ It prompts, with hidden input, for:
 
 The values are piped straight to `cf deploy --secrets-file`, so they never touch disk or shell history. Run it again any time to rotate secrets.
 
-Without an interactive terminal (for example, when a remote agent runs the deploy), set the secrets in the Cloudflare dashboard instead:
+If the deploy runs somewhere you can't type into (for example, a remote agent's machine), set the secrets yourself first:
 
-1. Create a Worker named `circularity-minter` (any placeholder, such as the dashboard's Hello World template).
-2. In that Worker, go to **Settings** > **Variables and Secrets** and add `PRIVATE_KEY`, `RPC_URL`, and `RUN_TOKEN`, each with type **Secret**.
-3. Run `npm run deploy`. It replaces the placeholder code and keeps the secrets.
+1. Create a Worker named `circularity-minter`, with any placeholder code (for example, the dashboard's Hello World template).
+2. Add the secrets to it, either in the dashboard under **Settings** > **Variables and Secrets** (type **Secret**), or with `cf` on your own machine. This zsh loop prompts for each value with hidden input. In bash, use `read -rsp "$name: " value` instead:
+
+   ```bash
+   for name in PRIVATE_KEY RPC_URL RUN_TOKEN; do read -rs "value?$name: " && echo && cf workers secrets update "$name" --worker circularity-minter --type secret_text --text "$value"; done; unset value
+   ```
+
+3. Run `npm run deploy`. It replaces the placeholder code and keeps the secrets. If it reports a configuration conflict with the placeholder, review the diff and rerun with `--force`.
 
 ### Later deploys
 
