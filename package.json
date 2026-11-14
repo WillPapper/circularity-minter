@@ -1,8 +1,25 @@
 {
+  "name": "circularity-minter",
+  "private": true,
   "repository": "https://github.com/WillPapper/circularity-minter",
   "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "cf dev",
+    "build": "cf build",
+    "deploy": "cf deploy",
+    "deploy:secrets": "./scripts/deploy-with-secrets.sh",
+    "typecheck": "cf workers types && tsc --noEmit",
+    "test:fork": "node test/fork.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.57.19"
+  },
   "devDependencies": {
-    "@syndicateio/syndicate-node": "^0.0.302",
-    "@vercel/node": "^3.0.7"
+    "@cloudflare/vite-plugin": "2.0.0-beta.v.17",
+    "cf": "1.0.0-beta.32",
+    "hardhat": "^2.29.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
   }
 }

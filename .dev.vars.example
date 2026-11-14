@@ -1,0 +1,5 @@
+# Local secrets for `npm run dev`. Copy to .dev.vars (gitignored).
+# Transactions are sent to whatever RPC_URL points at.
+PRIVATE_KEY="0x..."
+RPC_URL="https://..."
+RUN_TOKEN="any-long-random-string"
