@@ -217,8 +217,10 @@ function monthAfter(timestamp) {
   };
 }
 
-const firstOfMonth = ({ year, month }, hour, minute = 0) =>
-  Date.UTC(year, month - 1, 1, hour, minute) / 1000;
+const onDay = ({ year, month }, day, hour, minute = 0) =>
+  Date.UTC(year, month - 1, day, hour, minute) / 1000;
+
+const firstOfMonth = (month, hour, minute = 0) => onDay(month, 1, hour, minute);
 
 const label = ({ year, month }) => `${year}-${String(month).padStart(2, "0")}`;
 
@@ -244,8 +246,9 @@ async function worker(path, init = {}) {
   return { status: response.status, text, json };
 }
 
+// Matches the schedule in cloudflare.config.ts
 async function cron() {
-  const cronExpression = encodeURIComponent("0 1 1 * *");
+  const cronExpression = encodeURIComponent("0 1 * * *");
   const { json } = await worker(
     `/cdn-cgi/local/scheduled?cron=${cronExpression}&format=json`,
   );
@@ -259,13 +262,18 @@ function run(token = RUN_TOKEN) {
   });
 }
 
-// Runs the cron at the current fork time and checks that it burns into
-// `target` and mints every Burn Ceremony NFT owed
-async function expectScheduledRun(target) {
+// Runs the job at the current fork time, by cron or POST /run, and checks that
+// it burns into `target` and mints every Burn Ceremony NFT owed
+async function expectRun(target, via = "cron") {
   const before = await chainState();
   const recordedOwner = await read(CIRCULARITY, "owners", [BigInt(target.month)]);
 
-  check((await cron()) === "ok", "the cron run succeeds");
+  if (via === "cron") {
+    check((await cron()) === "ok", "the cron run succeeds");
+  } else {
+    const manual = await run();
+    check(manual.status === 200 && manual.json?.ok === true, "POST /run succeeds", manual.json);
+  }
 
   const after = await chainState();
   check(
@@ -362,7 +370,7 @@ async function main() {
   const first = monthAfter(fork.time);
   section(`1. Scheduled run at 1 AM on ${label(first)}-01`);
   await setTime(firstOfMonth(first, 1));
-  await expectScheduledRun(first);
+  await expectRun(first);
 
   // 2
   section("2. Running again sends nothing");
@@ -376,12 +384,15 @@ async function main() {
     "POST /run reports both steps skipped",
     manual.json,
   );
+  await setTime(onDay(first, 15, 1));
+  check((await cron()) === "ok", `the daily run on ${label(first)}-15 succeeds`);
   check((await chainState()).nonce === beforeRerun.nonce, "no transactions are sent");
   const idle = await worker("/");
   check(
     idle.json?.circularity?.burnDue === false &&
-      idle.json?.burnCeremony?.amountEligibleToMint === 0,
-    "GET / shows nothing due",
+      idle.json?.burnCeremony?.amountEligibleToMint === 0 &&
+      idle.json?.minter?.pendingTransactions === 0,
+    "GET / shows nothing due and nothing pending",
     idle.json,
   );
 
@@ -425,9 +436,10 @@ async function main() {
   const january = { year: december.year + 1, month: 1 };
   section(`5. Missed months until ${label(december)}, then a year rollover to ${label(january)}`);
   await setTime(firstOfMonth(december, 1));
-  await expectScheduledRun(december);
+  await expectRun(december);
   await setTime(firstOfMonth(january, 1));
-  await expectScheduledRun(january);
+  console.log("  The rollover run is triggered with POST /run:");
+  await expectRun(january, "POST /run");
 
   // 6
   // With exactly 12 months missed, burn() only updates the year: the month's
@@ -435,13 +447,66 @@ async function main() {
   const nextJanuary = { year: january.year + 1, month: 1 };
   section(`6. Exactly a year missed, ${label(january)} to ${label(nextJanuary)}`);
   await setTime(firstOfMonth(nextJanuary, 1));
-  await expectScheduledRun(nextJanuary);
+  await expectRun(nextJanuary);
 
   // 7
-  const afterJanuary = monthAfter(firstOfMonth(nextJanuary, 1));
-  section(`7. An empty wallet on ${label(afterJanuary)}-01 fails loudly, then recovers`);
+  // With Hardhat's automining off, a transaction from the minter wallet stays
+  // pending, like one stuck during a gas spike
+  const stuckMonth = monthAfter(firstOfMonth(nextJanuary, 1));
+  section(`7. A transaction stuck pending on ${label(stuckMonth)}-01 blocks new sends until it's mined`);
+  await setTime(firstOfMonth(stuckMonth, 1));
+  const minterWallet = createWalletClient({
+    account: privateKeyToAccount(MINTER_KEY),
+    chain: mainnet,
+    transport: http(forkUrl),
+  });
+  await rpc("evm_setAutomine", [false]);
+  await minterWallet.sendTransaction({ to: MINTER, value: 0n });
+  const pendingCount = () =>
+    client.getTransactionCount({ address: MINTER, blockTag: "pending" });
+  const pendingBefore = await pendingCount();
+  check((await cron()) === "exception", "the cron run is marked failed");
+  const stuckRun = await run();
+  check(
+    stuckRun.status === 500 &&
+      stuckRun.json?.burn?.status === "failed" &&
+      stuckRun.json?.mint?.status === "failed" &&
+      /pending/i.test(stuckRun.json?.burn?.error ?? ""),
+    "POST /run returns 500, saying a transaction is pending",
+    stuckRun.json,
+  );
+  check(
+    stuckRun.json?.before?.minter?.pendingTransactions === 1,
+    "the status reports 1 pending transaction",
+    stuckRun.json?.before?.minter,
+  );
+  check((await pendingCount()) === pendingBefore, "no new transactions are sent");
+  await rpc("evm_mine"); // the stuck transaction is mined
+  await rpc("evm_setAutomine", [true]);
+  console.log("  Once it's mined, the next day's run proceeds:");
+  await setTime(onDay(stuckMonth, 2, 1));
+  await expectRun(stuckMonth);
+  console.log("  A pending transaction with nothing due is not a failure:");
+  await setTime(onDay(stuckMonth, 3, 1));
+  await rpc("evm_setAutomine", [false]);
+  await minterWallet.sendTransaction({ to: MINTER, value: 0n });
+  check((await cron()) === "ok", "the daily run succeeds");
+  const idleWhilePending = await run();
+  check(
+    idleWhilePending.status === 200 &&
+      idleWhilePending.json?.burn?.status === "skipped" &&
+      idleWhilePending.json?.mint?.status === "skipped",
+    "POST /run reports both steps skipped",
+    idleWhilePending.json,
+  );
+  await rpc("evm_mine");
+  await rpc("evm_setAutomine", [true]);
+
+  // 8
+  const emptyMonth = monthAfter(onDay(stuckMonth, 2, 1));
+  section(`8. An empty wallet on ${label(emptyMonth)}-01 fails loudly; the next day's run recovers`);
   await rpc("hardhat_setBalance", [MINTER, "0x0"]);
-  await setTime(firstOfMonth(afterJanuary, 1));
+  await setTime(firstOfMonth(emptyMonth, 1));
   const beforeEmpty = await chainState();
   check((await cron()) === "exception", "the cron run is marked failed");
   const emptyRun = await run();
@@ -465,18 +530,12 @@ async function main() {
     "nothing is sent and nothing changes",
   );
   await rpc("hardhat_setBalance", [MINTER, "0x21e19e0c9bab2400000"]); // 10,000 ETH
-  const recovered = await run();
-  const afterRecovery = await chainState();
-  check(
-    recovered.status === 200 &&
-      afterRecovery.month === afterJanuary.month &&
-      afterRecovery.eligible === 0,
-    "after funding the wallet, POST /run burns and mints",
-    recovered.json,
-  );
+  console.log("  After funding the wallet, the next day's run catches up:");
+  await setTime(onDay(emptyMonth, 2, 1));
+  await expectRun(emptyMonth);
 
-  // 8
-  section("8. The RPC URL's key never leaks");
+  // 9
+  section("9. The RPC URL's key never leaks");
   await stop(hardhatProcess);
   const down = await worker("/");
   check(

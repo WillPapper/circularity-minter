@@ -12,11 +12,12 @@ export default defineConfig({
       enabled: true,
     },
     triggers: [
-      // 1 AM UTC on the first of every month. 1 AM is used instead of
-      // midnight to give humans an hour to burn/mint for on-chain provenance
-      // if desired. If they do, this run sees nothing is due and sends no
-      // transactions.
-      triggers.scheduled({ schedule: "0 1 1 * *" }),
+      // Daily at 1 AM UTC. The run on the 1st does the month's burn and mint;
+      // runs on other days send nothing unless that run failed, in which case
+      // they retry it. 1 AM is used instead of midnight to give humans an hour
+      // on the 1st to burn/mint for on-chain provenance if desired. If they
+      // do, the run sees nothing is due and sends no transactions.
+      triggers.scheduled({ schedule: "0 1 * * *" }),
     ],
     // Set with `npm run deploy:secrets` or `cf workers secrets update` (see
     // README)

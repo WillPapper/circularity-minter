@@ -2,19 +2,20 @@
 
 A minting bot for the Circularity NFT, running as a [Cloudflare Worker](https://developers.cloudflare.com/workers/) on a [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/). It's managed with the [Cloudflare CLI](https://developers.cloudflare.com/cf/) (`cf`) and configured in `cloudflare.config.ts`. It previously ran on Vercel and sent transactions through Syndicate's Transaction Cloud.
 
-At 1 AM UTC on the first of every month it:
+On the first of every month at 1 AM UTC it:
 
 1. Calls `burn()` on [Circularity](https://etherscan.io/address/0x8680db891ff8c34f2ffcefac43d55059d010a821), which burns the prior month's NFT and mints the current month's NFT to its recorded owner.
 2. Calls `mint(amount)` on [Circularity - Burn Ceremony](https://etherscan.io/address/0x83cc08E3783E9fF097e87a63BEc7503465C84714), minting every Burn Ceremony NFT that is owed to the artist.
 
-1 AM is used instead of midnight to give humans an hour to burn and mint themselves for on-chain provenance. Contract source: [WillPapper/circularity](https://github.com/WillPapper/circularity).
+It runs every day at 1 AM UTC, so if the run on the 1st fails, the next day's run retries it. Runs on other days find nothing due and send nothing. 1 AM is used instead of midnight to give humans an hour on the 1st to burn and mint themselves for on-chain provenance. Contract source: [WillPapper/circularity](https://github.com/WillPapper/circularity).
 
 ## How it behaves
 
 - **Idempotent.** Each run reads on-chain state first and sends only the transactions that are due. Re-running after a success, or after a human already burned and minted, sends nothing.
-- **Catches up.** `burn()` jumps straight to the current month, and `mint` uses `amountEligibleToMint()` rather than a fixed 1, so a missed month is recovered on the next run.
-- **No wasted gas on reverts.** Every call is simulated before it is sent.
-- **Independent steps.** A failed burn doesn't stop the mint, or the reverse. If either fails, the invocation is marked as failed in the Worker's Cron Events.
+- **Retries daily.** A failed run is retried the next day. This matters for Circularity: `burn()` can only mint the current month's NFT, so a month that's never burned is skipped for good.
+- **Catches up.** `mint` uses `amountEligibleToMint()` rather than a fixed 1, so Burn Ceremony NFTs for missed months are all minted on the next successful run.
+- **No wasted gas on reverts.** Every call is simulated before it is sent. Nothing is sent while an earlier transaction from the bot wallet is still pending (for example, stuck during a gas spike), since a duplicate behind it would be rejected. To make getting stuck unlikely, the max fee is set to 2x the current base fee instead of viem's default 1.2x; transactions still pay only the actual fee.
+- **Independent steps.** A burn that fails or reverts doesn't stop the mint, or the reverse. The exception is a pending transaction: if one is waiting to be mined, including one sent earlier in the same run, both steps wait for the next run. If either step fails, the invocation is marked as failed in the Worker's Cron Events.
 
 Both contract functions are permissionless, so any wallet with ETH for gas can run this. The wallet never holds the NFTs.
 
@@ -22,8 +23,8 @@ Both contract functions are permissionless, so any wallet with ETH for gas can r
 
 | Route | Description |
 | --- | --- |
-| `GET /` | Read-only status: the current Circularity month, Burn Ceremony NFTs owed, and the minter wallet's address and balance. |
-| `POST /run` | Runs the same job as the cron immediately. Requires `Authorization: Bearer <RUN_TOKEN>`. It waits for receipts, so keep the connection open until it responds (usually under a minute). |
+| `GET /` | Read-only status: the current Circularity month, Burn Ceremony NFTs owed, and the minter wallet's address, balance, and pending transactions. |
+| `POST /run` | Runs the same job as the cron immediately. Requires `Authorization: Bearer <RUN_TOKEN>`. It waits for receipts, so keep the connection open until it responds (usually under a minute). Avoid calling it while the 1 AM UTC run is in progress: two overlapping runs can each send a transaction, and the contract rejects the second, wasting a little gas. |
 
 ## Setup
 
@@ -90,7 +91,8 @@ The Workers Paid plan is recommended. Deriving the signing key takes about 9ms o
 ## Monitoring
 
 - Each run's report is logged as JSON. View it in the dashboard under the Worker's **Observability** tab, or stream live logs with `wrangler tail circularity-minter`. `cf` can't tail logs yet, so this is the one task that falls back to Wrangler (installed globally, not as a project dependency). It reads the same `.env` account.
-- Failed runs appear under the Worker's **Settings** > **Triggers** > **Cron Events**.
+- Failed runs appear under the Worker's **Settings** > **Triggers** > **Cron Events**. A failed run on the 1st is retried each day at 1 AM UTC until it succeeds.
+- `GET /` reports `pendingTransactions` for the bot wallet. If it stays above 0, a transaction is stuck and runs won't send until it's mined or dropped. It's `null` if the RPC doesn't report pending transactions, in which case runs send normally and the contracts reject any duplicate.
 - `GET /` shows the minter wallet's balance, so you can top it up before it runs dry.
 
 ## Local development
@@ -115,13 +117,14 @@ npm run test:fork
 This runs an end-to-end test against a local mainnet fork in about 15 seconds. It starts a Hardhat fork of Ethereum mainnet, runs the Worker with `cf dev` against it, and moves the fork's clock through each scenario:
 
 1. A scheduled run that catches up every missed month
-2. Re-runs, by cron and `POST /run`, that send nothing
+2. Re-runs, by cron and `POST /run`, and a mid-month daily run, all sending nothing
 3. `POST /run` rejecting missing and wrong tokens
 4. Humans burning and minting before the 1 AM run, which then sends nothing
 5. Missed months up to December, then a year rollover to January
 6. Exactly 12 missed months, where `burn()` only updates the year
-7. An empty wallet failing loudly without changing anything, then recovering once funded
-8. The RPC URL's key never appearing in responses or logs, including while the RPC is down
+7. A transaction stuck pending blocking new sends, then the next day's run proceeding once it's mined
+8. An empty wallet failing loudly without changing anything, then the next day's run catching up once it's funded
+9. The RPC URL's key never appearing in responses or logs, including while the RPC is down
 
 Expectations are computed from the contracts' state at the fork, so the test works whichever month mainnet is in.
 

@@ -32,7 +32,7 @@ async function isAuthorized(request: Request, token: string): Promise<boolean> {
 }
 
 export default {
-  // Runs at 1 AM UTC on the first of every month (see cloudflare.config.ts)
+  // Runs daily at 1 AM UTC (see cloudflare.config.ts)
   async scheduled(_controller, env) {
     const report = await runMinter(env);
     console.log(JSON.stringify(report));

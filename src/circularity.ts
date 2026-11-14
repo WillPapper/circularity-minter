@@ -38,6 +38,12 @@ const burnCeremonyAbi = parseAbi([
   "function amountEligibleToMint() view returns (uint256)",
 ]);
 
+// viem caps the max fee at 1.2x the current base fee by default, which a gas
+// spike can overtake, leaving the transaction stuck pending. The base fee rises
+// at most 12.5% per block, so 2x covers about six consecutive full blocks. A
+// transaction still pays only the actual base fee, so this costs nothing extra.
+const chain = { ...mainnet, fees: { baseFeeMultiplier: 2 } };
+
 // Mainnet produces a block every 12 seconds, so polling faster only spends
 // subrequests. Two receipt waits must fit in a Cron Trigger's 15 minute limit.
 const RECEIPT_POLLING_INTERVAL_MS = 12_000;
@@ -51,7 +57,13 @@ export interface MinterConfig {
 export interface Status {
   blockNumber: number;
   blockTime: string;
-  minter: { address: Address; balanceEth: string };
+  minter: {
+    address: Address;
+    balanceEth: string;
+    // Transactions sent from the minter wallet that aren't mined yet, or null
+    // if the RPC doesn't report pending transactions
+    pendingTransactions: number | null;
+  };
   circularity: {
     // Month (1-12) and year of the NFT that currently exists
     contractMonth: number;
@@ -100,8 +112,8 @@ function createClients(config: MinterConfig) {
   const transport = http(config.RPC_URL, { batch: true });
   return {
     account,
-    publicClient: createPublicClient({ chain: mainnet, transport }),
-    walletClient: createWalletClient({ account, chain: mainnet, transport }),
+    publicClient: createPublicClient({ chain, transport }),
+    walletClient: createWalletClient({ account, chain, transport }),
   };
 }
 
@@ -167,34 +179,51 @@ async function readStatus({
 
   // Pin every read to one block so the state is consistent
   const blockNumber = block.number;
-  const [contractMonth, contractYear, currentId, eligible, balance] =
-    await Promise.all([
-      publicClient.readContract({
-        address: CIRCULARITY_ADDRESS,
-        abi: circularityAbi,
-        functionName: "contractMonth",
-        blockNumber,
-      }),
-      publicClient.readContract({
-        address: CIRCULARITY_ADDRESS,
-        abi: circularityAbi,
-        functionName: "contractYear",
-        blockNumber,
-      }),
-      publicClient.readContract({
-        address: BURN_CEREMONY_ADDRESS,
-        abi: burnCeremonyAbi,
-        functionName: "currentId",
-        blockNumber,
-      }),
-      publicClient.readContract({
-        address: BURN_CEREMONY_ADDRESS,
-        abi: burnCeremonyAbi,
-        functionName: "amountEligibleToMint",
-        blockNumber,
-      }),
-      publicClient.getBalance({ address: account.address, blockNumber }),
-    ]);
+  const [
+    contractMonth,
+    contractYear,
+    currentId,
+    eligible,
+    balance,
+    confirmedNonce,
+    pendingNonce,
+  ] = await Promise.all([
+    publicClient.readContract({
+      address: CIRCULARITY_ADDRESS,
+      abi: circularityAbi,
+      functionName: "contractMonth",
+      blockNumber,
+    }),
+    publicClient.readContract({
+      address: CIRCULARITY_ADDRESS,
+      abi: circularityAbi,
+      functionName: "contractYear",
+      blockNumber,
+    }),
+    publicClient.readContract({
+      address: BURN_CEREMONY_ADDRESS,
+      abi: burnCeremonyAbi,
+      functionName: "currentId",
+      blockNumber,
+    }),
+    publicClient.readContract({
+      address: BURN_CEREMONY_ADDRESS,
+      abi: burnCeremonyAbi,
+      functionName: "amountEligibleToMint",
+      blockNumber,
+    }),
+    publicClient.getBalance({ address: account.address, blockNumber }),
+    // Compare both counts at the RPC's latest state rather than the pinned
+    // block, so a transaction mined since then isn't mistaken for pending.
+    // Some RPCs reject "pending"; treat that as unknown rather than failing
+    // the run, and rely on the contracts rejecting any duplicate.
+    publicClient
+      .getTransactionCount({ address: account.address, blockTag: "latest" })
+      .catch(() => null),
+    publicClient
+      .getTransactionCount({ address: account.address, blockTag: "pending" })
+      .catch(() => null),
+  ]);
 
   // Circularity.burn() derives the month and year from block.timestamp in UTC,
   // and reverts if both already match the stored contractMonth/contractYear
@@ -205,7 +234,14 @@ async function readStatus({
   return {
     blockNumber: Number(blockNumber),
     blockTime: blockDate.toISOString(),
-    minter: { address: account.address, balanceEth: formatEther(balance) },
+    minter: {
+      address: account.address,
+      balanceEth: formatEther(balance),
+      pendingTransactions:
+        confirmedNonce === null || pendingNonce === null
+          ? null
+          : Math.max(0, pendingNonce - confirmedNonce),
+    },
     circularity: {
       contractMonth: Number(contractMonth),
       contractYear: Number(contractYear),
@@ -224,6 +260,16 @@ export async function runMinter(config: MinterConfig): Promise<RunReport> {
   const clients = createClients(config);
   const { account, publicClient, walletClient } = clients;
   const before = await readStatus(clients);
+
+  // A transaction from an earlier run can still be waiting to be mined, for
+  // example during a gas spike. Sending again would queue a duplicate behind it
+  // that the contract rejects, wasting gas, so leave due steps to the next run.
+  // This also covers a transaction from this run that isn't confirmed in time.
+  const { pendingTransactions } = before.minter;
+  let pendingError =
+    pendingTransactions !== null && pendingTransactions > 0
+      ? `${pendingTransactions} earlier transaction(s) from the minter wallet are still pending. Not sending until they're mined.`
+      : undefined;
 
   // Simulating first means a call that would revert (for example, because a
   // human already burned this month) fails here instead of costing gas
@@ -253,43 +299,62 @@ export async function runMinter(config: MinterConfig): Promise<RunReport> {
     } catch (error) {
       const message = errorMessage(error, config.RPC_URL);
       console.error(`${label}: ${message}`);
+      if (hash) {
+        // Sent but not confirmed, so it may still be pending
+        pendingError = `The ${label} transaction ${hash} isn't confirmed yet. Not sending more until it's mined.`;
+      }
       return { status: "failed", error: message, transactionHash: hash };
     }
   }
 
+  async function step(
+    label: string,
+    skipReason: string | undefined,
+    write: () => Promise<Hash>,
+  ): Promise<StepResult> {
+    if (skipReason) return { status: "skipped", reason: skipReason };
+    if (pendingError) {
+      console.error(`${label}: ${pendingError}`);
+      return { status: "failed", error: pendingError };
+    }
+    return submit(label, write);
+  }
+
   // Burn the prior month's Circularity NFT, minting the current month's
   const { contractMonth, contractYear, burnDue } = before.circularity;
-  const burn: StepResult = burnDue
-    ? await submit("burn", async () => {
-        const { request } = await publicClient.simulateContract({
-          account,
-          address: CIRCULARITY_ADDRESS,
-          abi: circularityAbi,
-          functionName: "burn",
-        });
-        return walletClient.writeContract(request);
-      })
-    : {
-        status: "skipped",
-        reason: `Already burned for ${formatMonth(contractYear, contractMonth)}`,
-      };
+  const burn = await step(
+    "burn",
+    burnDue
+      ? undefined
+      : `Already burned for ${formatMonth(contractYear, contractMonth)}`,
+    async () => {
+      const { request } = await publicClient.simulateContract({
+        account,
+        address: CIRCULARITY_ADDRESS,
+        abi: circularityAbi,
+        functionName: "burn",
+      });
+      return walletClient.writeContract(request);
+    },
+  );
 
   // Mint every Burn Ceremony NFT that is owed. Normally this is 1, but minting
   // the full eligible amount catches up automatically after missed months.
   const amount = BigInt(before.burnCeremony.amountEligibleToMint);
-  const mint: StepResult =
-    amount > 0n
-      ? await submit("mint", async () => {
-          const { request } = await publicClient.simulateContract({
-            account,
-            address: BURN_CEREMONY_ADDRESS,
-            abi: burnCeremonyAbi,
-            functionName: "mint",
-            args: [amount],
-          });
-          return walletClient.writeContract(request);
-        })
-      : { status: "skipped", reason: "No Burn Ceremony NFTs are eligible to mint" };
+  const mint = await step(
+    "mint",
+    amount > 0n ? undefined : "No Burn Ceremony NFTs are eligible to mint",
+    async () => {
+      const { request } = await publicClient.simulateContract({
+        account,
+        address: BURN_CEREMONY_ADDRESS,
+        abi: burnCeremonyAbi,
+        functionName: "mint",
+        args: [amount],
+      });
+      return walletClient.writeContract(request);
+    },
+  );
 
   return {
     ok: burn.status !== "failed" && mint.status !== "failed",
