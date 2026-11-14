@@ -78,7 +78,7 @@ The Workers Paid plan is recommended. Deriving the signing key takes about 9ms o
 
 ## Monitoring
 
-- Each run's report is logged as JSON. View it in the dashboard under the Worker's **Observability** tab.
+- Each run's report is logged as JSON. View it in the dashboard under the Worker's **Observability** tab, or stream live logs with `wrangler tail circularity-minter`. `cf` can't tail logs yet, so this is the one task that falls back to Wrangler (installed globally, not as a project dependency). It reads the same `.env` account.
 - Failed runs appear under the Worker's **Settings** > **Triggers** > **Cron Events**.
 - `GET /` shows the minter wallet's balance, so you can top it up before it runs dry.
 
@@ -91,6 +91,32 @@ npm run dev
 curl "http://localhost:5173/cdn-cgi/local/scheduled?cron=0+1+1+*+*&format=json"
 ```
 
-The second command triggers the scheduled handler. Local runs send real transactions to whatever `RPC_URL` points at. To test without spending ETH, point it at a local mainnet fork (for example `npx hardhat node --fork <mainnet RPC URL>` with `chainId: 1`) and use one of the fork's funded test accounts.
+The second command triggers the scheduled handler. Local runs send real transactions to whatever `RPC_URL` points at, so use the fork test below to try changes without spending ETH.
 
 `npm run typecheck` regenerates the binding types in `.cloudflare/types` and type-checks the project.
+
+## Testing
+
+```bash
+npm run test:fork
+```
+
+This runs an end-to-end test against a local mainnet fork in about 15 seconds. It starts a Hardhat fork of Ethereum mainnet, runs the Worker with `cf dev` against it, and moves the fork's clock through each scenario:
+
+1. A scheduled run that catches up every missed month
+2. Re-runs, by cron and `POST /run`, that send nothing
+3. `POST /run` rejecting missing and wrong tokens
+4. Humans burning and minting before the 1 AM run, which then sends nothing
+5. Missed months up to December, then a year rollover to January
+6. Exactly 12 missed months, where `burn()` only updates the year
+7. An empty wallet failing loudly without changing anything, then recovering once funded
+8. The RPC URL's key never appearing in responses or logs, including while the RPC is down
+
+Expectations are computed from the contracts' state at the fork, so the test works whichever month mainnet is in.
+
+The test never touches mainnet or your `.dev.vars`. It writes its own `.dev.vars.forktest` holding Hardhat's public test keys, removes it afterwards, and aborts unless the Worker is signing with the test key on the fork.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FORK_RPC_URL` | A public mainnet RPC | The RPC to fork. Use your own for reliability. |
+| `FORK_BLOCK` | Latest block | Pins the fork to a block. Requires an archive RPC. |
