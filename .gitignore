@@ -130,7 +130,9 @@ dist
 .pnp.*
 .vercel
 
-# Cloudflare Workers
-.wrangler/
+# Cloudflare Workers local secrets
 .dev.vars*
 !.dev.vars.example
+
+# cf CLI (build output, generated types, local state)
+.cloudflare/

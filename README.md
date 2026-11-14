@@ -1,6 +1,6 @@
 # circularity-minter
 
-A minting bot for the Circularity NFT, running as a [Cloudflare Worker](https://developers.cloudflare.com/workers/) on a [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/). It previously ran on Vercel and sent transactions through Syndicate's Transaction Cloud.
+A minting bot for the Circularity NFT, running as a [Cloudflare Worker](https://developers.cloudflare.com/workers/) on a [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/). It's managed with the [Cloudflare CLI](https://developers.cloudflare.com/cf/) (`cf`) and configured in `cloudflare.config.ts`. It previously ran on Vercel and sent transactions through Syndicate's Transaction Cloud.
 
 At 1 AM UTC on the first of every month it:
 
@@ -27,28 +27,44 @@ Both contract functions are permissionless, so any wallet with ETH for gas can r
 
 ## Setup
 
+Install dependencies and sign in to Cloudflare:
+
 ```bash
 npm install
-npx wrangler login
+npx cf auth login
+```
+
+If your login can access more than one Cloudflare account, choose one with a gitignored `.env` file in the project root:
+
+```bash
+echo "CLOUDFLARE_ACCOUNT_ID=<account id>" > .env
 ```
 
 Create a dedicated wallet for the bot and fund it with a small amount of ETH. A normal month uses about 145k to 165k gas: 77k to 97k for the burn, plus 68k for minting one Burn Ceremony NFT.
 
-Set the three secrets. Each command prompts for the value, and the first one offers to create the Worker:
+### First deploy
+
+`cf` can't set secrets on a Worker that doesn't exist yet, so the first deploy uploads them with the code:
 
 ```bash
-npx wrangler secret put PRIVATE_KEY   # 0x-prefixed private key of the bot wallet
-npx wrangler secret put RPC_URL       # Ethereum mainnet JSON-RPC URL, e.g. from Alchemy or Infura
-npx wrangler secret put RUN_TOKEN     # any long random string, e.g. from `openssl rand -hex 32`
+npm run deploy:secrets
 ```
 
-Then deploy:
+It prompts, with hidden input, for:
+
+- `PRIVATE_KEY`: the bot wallet's 0x-prefixed private key
+- `RPC_URL`: an Ethereum mainnet JSON-RPC URL, for example from Alchemy or Infura
+- `RUN_TOKEN`: any long random string, which you'll need for `POST /run`
+
+The values are piped straight to `cf deploy --secrets-file`, so they never touch disk or shell history. Run it again any time to rotate secrets.
+
+### Later deploys
 
 ```bash
 npm run deploy
 ```
 
-`wrangler deploy` refuses to deploy until all three secrets are set.
+Existing secrets carry over to new versions.
 
 To catch up immediately instead of waiting for the next cron:
 
@@ -62,7 +78,7 @@ The Workers Paid plan is recommended. Deriving the signing key takes about 9ms o
 
 ## Monitoring
 
-- Each run's report is logged as JSON. View it in the dashboard under the Worker's **Observability** tab, or stream it with `npx wrangler tail`.
+- Each run's report is logged as JSON. View it in the dashboard under the Worker's **Observability** tab.
 - Failed runs appear under the Worker's **Settings** > **Triggers** > **Cron Events**.
 - `GET /` shows the minter wallet's balance, so you can top it up before it runs dry.
 
@@ -72,9 +88,9 @@ Copy `.dev.vars.example` to `.dev.vars` and fill it in. `.dev.vars` is gitignore
 
 ```bash
 npm run dev
-curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=0+1+1+*+*&format=json"
+curl "http://localhost:5173/cdn-cgi/local/scheduled?cron=0+1+1+*+*&format=json"
 ```
 
 The second command triggers the scheduled handler. Local runs send real transactions to whatever `RPC_URL` points at. To test without spending ETH, point it at a local mainnet fork (for example `npx hardhat node --fork <mainnet RPC URL>` with `chainId: 1`) and use one of the fork's funded test accounts.
 
-After changing `wrangler.jsonc`, regenerate `worker-configuration.d.ts` with `npm run types`. Type-check with `npm run typecheck`.
+`npm run typecheck` regenerates the binding types in `.cloudflare/types` and type-checks the project.
