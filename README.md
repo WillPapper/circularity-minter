@@ -58,6 +58,12 @@ It prompts, with hidden input, for:
 
 The values are piped straight to `cf deploy --secrets-file`, so they never touch disk or shell history. Run it again any time to rotate secrets.
 
+Without an interactive terminal (for example, when a remote agent runs the deploy), set the secrets in the Cloudflare dashboard instead:
+
+1. Create a Worker named `circularity-minter` (any placeholder, such as the dashboard's Hello World template).
+2. In that Worker, go to **Settings** > **Variables and Secrets** and add `PRIVATE_KEY`, `RPC_URL`, and `RUN_TOKEN`, each with type **Secret**.
+3. Run `npm run deploy`. It replaces the placeholder code and keeps the secrets.
+
 ### Later deploys
 
 ```bash
