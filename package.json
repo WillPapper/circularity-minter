@@ -1,8 +1,20 @@
 {
+  "name": "circularity-minter",
+  "private": true,
   "repository": "https://github.com/WillPapper/circularity-minter",
   "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "^2.57.19"
+  },
   "devDependencies": {
-    "@syndicateio/syndicate-node": "^0.0.302",
-    "@vercel/node": "^3.0.7"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.162.0"
   }
 }
